@@ -51,7 +51,6 @@ During `--predict`, you select games from today's schedule and enter decimal odd
 mlb_betting_predictor/
 ├── run.py                  # CLI entry point
 ├── requirements.txt
-├── ARCHITECTURE.md         # Technical reference
 ├── src/
 │   ├── data_fetcher.py     # MLB Stats API fetch and CSV cache
 │   ├── feature_engineering.py
@@ -60,7 +59,3 @@ mlb_betting_predictor/
 ├── data/                   # Generated CSV cache (gitignored)
 └── models/                 # Trained model artifacts (gitignored)
 ```
-
-## Documentation
-
-For architecture, data schema, model details, calibration, and known limitations, see [ARCHITECTURE.md](ARCHITECTURE.md).
