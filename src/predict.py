@@ -6,20 +6,12 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
 
-# ---------------------- Piecewise Calibration (updated deciles) ----------------------
+# ---------------------- Piecewise Calibration ----------------------
 def calibrate_proba_using_deciles(p):
-    """
-    Updated piecewise correction based on your decile analysis.
-    Clamps extreme probabilities to reduce overconfidence.
-    """
-    # First clamp to reasonable range (0.05 – 0.95)
     p = max(0.05, min(0.95, p))
-    
-    # Apply mapping from your deciles
     if p <= 0.008:
         return 0.045
     elif p <= 0.160:
-        # linear interpolation between 0.008→0.045 and 0.160→0.479
         return 0.045 + (p - 0.008) * (0.479 - 0.045) / (0.160 - 0.008)
     elif p <= 0.265:
         return 0.479 + (p - 0.160) * (0.470 - 0.479) / (0.265 - 0.160)
@@ -38,32 +30,22 @@ def calibrate_proba_using_deciles(p):
     else:
         return 0.578 + (p - 0.847) * (0.547 - 0.578) / (0.948 - 0.847)
 
-# ---------------------- Game Retrieval (fixed for today's games) ----------------------
+# ---------------------- Game Retrieval ----------------------
 def get_todays_games():
-    """
-    Fetch games scheduled for today (using ET timezone).
-    If no games found, try tomorrow.
-    """
-    # Use Eastern Time (ET) for MLB schedule
     from datetime import timezone
-    now_et = datetime.now(timezone(timedelta(hours=-4)))  # EDT = UTC-4
+    now_et = datetime.now(timezone(timedelta(hours=-4)))
     today_str = now_et.strftime("%Y-%m-%d")
-    
     print(f"Fetching games for {today_str} (ET)...")
     games = statsapi.schedule(start_date=today_str, end_date=today_str)
-    
     if not games:
         print(f"No games found for {today_str}. Trying tomorrow...")
         tomorrow_str = (now_et + timedelta(days=1)).strftime("%Y-%m-%d")
         games = statsapi.schedule(start_date=tomorrow_str, end_date=tomorrow_str)
-    
     if not games:
-        print("No games found for today or tomorrow. Check API or date.")
+        print("No games found for today or tomorrow.")
         return []
-    
     game_list = []
     for g in games:
-        # Use 'game_date' from API, which is in ET
         game_list.append({
             'home_team': g.get('home_name'),
             'away_team': g.get('away_name'),
@@ -93,44 +75,48 @@ def manual_odds_input(games):
             else:
                 indices.add(int(part))
         selected = [games[i-1] for i in indices if 1 <= i <= len(games)]
-
     odds = {}
     print("\n" + "="*60)
     print("MANUAL ODDS ENTRY (Decimal format)")
-    print("Enter odds in DECIMAL format (e.g., 1.69, 2.10).")
-    print("Press Enter to skip a bet type.\n")
+    print("Enter odds in DECIMAL format (e.g., 1.69, 2.10). Press Enter to skip.\n")
     for g in selected:
         print(f"\n📌 {g['away_team']} @ {g['home_team']}")
         g_odds = {}
-        ml_home = input("  Home Moneyline (decimal): ").strip()
+        ml_home = input("  Home Moneyline: ").strip()
         if ml_home:
             g_odds['moneyline_home'] = float(ml_home)
-        ml_away = input("  Away Moneyline (decimal): ").strip()
+        ml_away = input("  Away Moneyline: ").strip()
         if ml_away:
             g_odds['moneyline_away'] = float(ml_away)
-        rl_home = input("  Home Run Line -1.5 (decimal): ").strip()
+        rl_home = input("  Home Run Line -1.5: ").strip()
         if rl_home:
             g_odds['runline_home'] = float(rl_home)
-        rl_away = input("  Away Run Line +1.5 (decimal): ").strip()
+        rl_away = input("  Away Run Line +1.5: ").strip()
         if rl_away:
             g_odds['runline_away'] = float(rl_away)
-        ou_line = input("  Over/Under line (e.g., 8.5): ").strip()
+        ou_line = input("  Over/Under line: ").strip()
         if ou_line:
             g_odds['over_under_line'] = float(ou_line)
-            over_odds = input("  Over odds (decimal): ").strip()
+            over_odds = input("  Over odds: ").strip()
             if over_odds:
                 g_odds['over_odds'] = float(over_odds)
-            under_odds = input("  Under odds (decimal): ").strip()
+            under_odds = input("  Under odds: ").strip()
             if under_odds:
                 g_odds['under_odds'] = float(under_odds)
         if g_odds:
             odds[f"{g['away_team']} @ {g['home_team']}"] = g_odds
     return odds
 
-# ... (the rest of compute_all_rolling_stats, prepare_features_for_tomorrow, calculate_ev_decimal, kelly_fraction, get_recommendations remain exactly as in the previous version) ...
-
-# The rest of the functions are unchanged; I'll include them for completeness.
+# ---------------------- Rolling Stats (with opponent strength) ----------------------
 def compute_all_rolling_stats(historical_df, team_name, current_date, windows=[1,3,5,7,10,15]):
+    """
+    Returns dict with:
+    - f'avg_runs_last{w}'
+    - f'avg_runs_allowed_last{w}'
+    - f'form_rating_last{w}'
+    - f'opp_strength_last{w}' (average runs allowed by opponents faced)
+    - 'pitching_strength'
+    """
     df = historical_df[(historical_df['home_team'] == team_name) | (historical_df['away_team'] == team_name)]
     df = df[pd.to_datetime(df['date']) < current_date].copy()
     if df.empty:
@@ -139,6 +125,7 @@ def compute_all_rolling_stats(historical_df, team_name, current_date, windows=[1
             result[f'avg_runs_last{w}'] = 4.5
             result[f'avg_runs_allowed_last{w}'] = 4.5
             result[f'form_rating_last{w}'] = 0.5
+            result[f'opp_strength_last{w}'] = 4.5
         result['pitching_strength'] = 1.0 / 4.6
         return result
     df['date'] = pd.to_datetime(df['date'])
@@ -149,25 +136,56 @@ def compute_all_rolling_stats(historical_df, team_name, current_date, windows=[1
             games.append({
                 'runs_scored': row['home_team_runs'],
                 'runs_allowed': row['away_team_runs'],
-                'won': row['home_win']
+                'won': row['home_win'],
+                'opponent': row['away_team']
             })
         else:
             games.append({
                 'runs_scored': row['away_team_runs'],
                 'runs_allowed': row['home_team_runs'],
-                'won': 1 - row['home_win']
+                'won': 1 - row['home_win'],
+                'opponent': row['home_team']
             })
     result = {}
+    # Precompute opponent's average runs allowed for each opponent (from historical_df)
+    # This is a simplified approach; we'll compute on-the-fly using the opponent's own rolling stats.
+    # For each game, we need the opponent's average runs allowed at the time of that game.
+    # To avoid complexity, we'll compute the opponent's recent runs allowed average from the entire historical set up to that date.
+    # We'll store in the games list the opponent's runs allowed average at that time.
+    # This is a bit heavy but acceptable.
     for w in windows:
         recent = games[:w]
         if len(recent) > 0:
             result[f'avg_runs_last{w}'] = np.mean([g['runs_scored'] for g in recent])
             result[f'avg_runs_allowed_last{w}'] = np.mean([g['runs_allowed'] for g in recent])
             result[f'form_rating_last{w}'] = np.mean([g['won'] for g in recent])
+            # Compute opponent strength: average runs allowed by each opponent in their own recent games
+            opp_strength_vals = []
+            for g in recent:
+                opp = g['opponent']
+                # Get opponent's recent runs allowed from historical_df up to the date of this game
+                opp_df = historical_df[(historical_df['home_team'] == opp) | (historical_df['away_team'] == opp)]
+                opp_df = opp_df[pd.to_datetime(opp_df['date']) < pd.to_datetime(g['date'])].copy()
+                if not opp_df.empty:
+                    opp_df = opp_df.sort_values('date', ascending=False).head(5)
+                    opp_allowed = []
+                    for _, r in opp_df.iterrows():
+                        if r['home_team'] == opp:
+                            opp_allowed.append(r['away_team_runs'])
+                        else:
+                            opp_allowed.append(r['home_team_runs'])
+                    if opp_allowed:
+                        opp_strength_vals.append(np.mean(opp_allowed))
+                    else:
+                        opp_strength_vals.append(4.5)
+                else:
+                    opp_strength_vals.append(4.5)
+            result[f'opp_strength_last{w}'] = np.mean(opp_strength_vals) if opp_strength_vals else 4.5
         else:
             result[f'avg_runs_last{w}'] = 4.5
             result[f'avg_runs_allowed_last{w}'] = 4.5
             result[f'form_rating_last{w}'] = 0.5
+            result[f'opp_strength_last{w}'] = 4.5
     w5 = windows[-3] if 5 in windows else 5
     result['pitching_strength'] = 1.0 / (result[f'avg_runs_allowed_last{w5}'] + 0.1)
     return result
@@ -187,20 +205,25 @@ def prepare_features_for_tomorrow(tomorrow_games, historical_df):
             row_dict[f'away_team_avg_runs_last{w}'] = away_stats[f'avg_runs_last{w}']
             row_dict[f'home_team_form_rating_last{w}'] = home_stats[f'form_rating_last{w}']
             row_dict[f'away_team_form_rating_last{w}'] = away_stats[f'form_rating_last{w}']
+            row_dict[f'home_opp_strength_last{w}'] = home_stats[f'opp_strength_last{w}']
+            row_dict[f'away_opp_strength_last{w}'] = away_stats[f'opp_strength_last{w}']
         row_dict['home_team_pitching_strength'] = home_stats['pitching_strength']
         row_dict['away_team_pitching_strength'] = away_stats['pitching_strength']
         row_dict['expected_margin'] = (home_stats['avg_runs_last5'] + 0.5) - away_stats['avg_runs_last5']
         features.append(row_dict)
     return pd.DataFrame(features)
 
+# ---------------------- EV and Kelly ----------------------
 def calculate_ev_decimal(prob, odds):
     return (prob * odds) - 1
 
-def kelly_fraction(prob, odds, kelly_factor=0.25):
+def kelly_fraction(prob, odds, kelly_factor=0.25, max_bankroll_fraction=0.05):
     b = odds - 1
     if b <= 0:
         return 0
-    return max(0, ((prob * b - (1 - prob)) / b) * kelly_factor)
+    full_kelly = ((prob * b) - (1 - prob)) / b
+    fractional = full_kelly * kelly_factor
+    return max(0, min(fractional, max_bankroll_fraction))
 
 def get_recommendations(features_df, odds_data, models, feature_sets, bankroll=1000):
     import os
@@ -242,11 +265,9 @@ def get_recommendations(features_df, odds_data, models, feature_sets, bankroll=1
         total_pred = models['total'].predict(winner_base)[0]
         
         def add_bet(prop, prob, odds_val):
-            if prob < 0.25 or prob > 0.80:
-                return
             ev = calculate_ev_decimal(prob, odds_val)
-            if ev > 0.05:
-                stake = kelly_fraction(prob, odds_val) * bankroll
+            if ev > 0:
+                stake = kelly_fraction(prob, odds_val, kelly_factor=0.25, max_bankroll_fraction=0.05) * bankroll
                 recs.append({
                     'game': game_key,
                     'prop': prop,
