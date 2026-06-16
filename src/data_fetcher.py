@@ -245,6 +245,7 @@ class MLBDataFetcher:
         if not all_games:
             return pd.DataFrame()
         df = pd.DataFrame(all_games)
+        df['date'] = pd.to_datetime(df['date'])  # ensure datetime
         if enrich:
             print("  Enriching games with pitcher/park data (may take a long time)...")
             df = self.enrich_games_with_pitcher_data(df)
@@ -286,7 +287,7 @@ class MLBDataFetcher:
         if not df.empty:
             # Filter future dates again to be safe
             today = datetime.now().date()
-            df = df[pd.to_datetime(df['date']).dt.date <= today]
+            df = df[df['date'].dt.date <= today]
             self.park_factors = self.compute_park_factors_from_data(df)
         return df
     
@@ -304,18 +305,22 @@ class MLBDataFetcher:
             print(f"Initial cache saved: {len(new_df)} games.")
             self.park_factors = self.compute_park_factors_from_data(new_df)
             return new_df
+        
         last_date = self.get_last_cache_date(cached_df)
         print(f"Last cached game date: {last_date}")
         new_df = self.fetch_new_games_since(last_date, enrich=enrich)
         if new_df.empty:
             print("No new games found.")
             return cached_df
+        
+        # Ensure both DataFrames have datetime date
         combined = pd.concat([cached_df, new_df], ignore_index=True)
+        combined['date'] = pd.to_datetime(combined['date'])
         combined = combined.drop_duplicates(subset=['date', 'home_team', 'away_team'])
         combined = combined.sort_values('date').reset_index(drop=True)
         # Filter future dates again
         today = datetime.now().date()
-        combined = combined[pd.to_datetime(combined['date']).dt.date <= today]
+        combined = combined[combined['date'].dt.date <= today]
         combined.to_csv(self.master_file, index=False)
         with open(self.last_fetch_file, 'w') as f:
             f.write(datetime.now().isoformat())
@@ -329,14 +334,15 @@ class MLBDataFetcher:
             return df
         # Filter future dates
         today = datetime.now().date()
-        df = df[pd.to_datetime(df['date']).dt.date <= today]
+        df = df[df['date'].dt.date <= today]
         if append_to_cache:
             cached = self.load_cached_data()
             if not cached.empty:
                 combined = pd.concat([cached, df], ignore_index=True)
+                combined['date'] = pd.to_datetime(combined['date'])
                 combined = combined.drop_duplicates(subset=['date', 'home_team', 'away_team'])
                 combined = combined.sort_values('date').reset_index(drop=True)
-                combined = combined[pd.to_datetime(combined['date']).dt.date <= today]
+                combined = combined[combined['date'].dt.date <= today]
                 combined.to_csv(self.master_file, index=False)
                 self.park_factors = self.compute_park_factors_from_data(combined)
             else:
