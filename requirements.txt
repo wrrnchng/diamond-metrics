@@ -9,3 +9,4 @@ lightgbm
 matplotlib
 imbalance-xgboost
 savant-extras
+betacal

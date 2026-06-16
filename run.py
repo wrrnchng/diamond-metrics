@@ -30,11 +30,9 @@ def format_ev(ev):
     return f"{sign}{ev:.4f}"
 
 def normalize_team(team):
-    """Normalize team name for consistent matching."""
     return team.strip().lower()
 
 def parlay_kelly_fraction(prob_product, odds_product, kelly_factor=0.25, max_bankroll_fraction=0.05):
-    """Calculate Kelly stake fraction for a parlay."""
     b = odds_product - 1
     if b <= 0:
         return 0
@@ -75,15 +73,29 @@ def main():
     
     if do_predict:
         print("\n=== Prediction Mode ===")
-        if not os.path.exists('models/total_model.pkl'):
-            print("No models. Run --train first.")
+        # Check that all required model files exist
+        required_files = ['total_model.pkl', 'winner_base.pkl', 'winner_calibrator.pkl',
+                          'runline_base.pkl', 'runline_isotonic.pkl', 'feature_sets.pkl']
+        missing = [f for f in required_files if not os.path.exists(f'models/{f}')]
+        if missing:
+            print(f"Missing model files: {missing}. Run --train first.")
             return
-        models = {
-            'total': joblib.load('models/total_model.pkl'),
-            'winner': joblib.load('models/winner_calibrated.pkl'),
-            'runline': joblib.load('models/runline_model.pkl')
-        }
+        
+        total_model = joblib.load('models/total_model.pkl')
+        winner_base = joblib.load('models/winner_base.pkl')
+        winner_calibrator = joblib.load('models/winner_calibrator.pkl')
+        runline_base = joblib.load('models/runline_base.pkl')
+        runline_calibrator = joblib.load('models/runline_isotonic.pkl')
         feature_sets = joblib.load('models/feature_sets.pkl')
+        
+        models = {
+            'total': total_model,
+            'winner_base': winner_base,
+            'winner_calibrator': winner_calibrator,
+            'runline_base': runline_base,
+            'runline_calibrator': runline_calibrator
+        }
+        
         historical = pd.read_csv('data/master_games.csv')
         
         games = get_todays_games()
@@ -98,7 +110,7 @@ def main():
         features_df = prepare_features_for_tomorrow(games, historical)
         recs = get_recommendations(features_df, odds_data, models, feature_sets, bankroll=args.bankroll)
         
-        # Build mapping of best bet per game using normalized team names
+        # Build mapping of best bet per game
         best_by_game = {}
         if not recs.empty:
             for _, row in recs.iterrows():
@@ -111,7 +123,6 @@ def main():
                 if key not in best_by_game or row['ev'] > best_by_game[key]['ev']:
                     best_by_game[key] = row.to_dict()
         
-        # Build output rows in original game order
         output_rows = []
         for g in games:
             away = normalize_team(g['away_team'])
@@ -142,11 +153,9 @@ def main():
                     'ev_value': -999
                 })
         
-        # Separate positive EV games for parlays
         positive_games = [r for r in output_rows if r['has_positive_ev']]
         positive_games.sort(key=lambda x: -x['ev_value'])
         
-        # Display per‑game table (positive first, then negative/none)
         pos_rows = [r for r in output_rows if r['has_positive_ev']]
         neg_rows = [r for r in output_rows if not r['has_positive_ev'] and r['ev'] is not None]
         no_bet_rows = [r for r in output_rows if r['ev'] is None]
@@ -175,7 +184,6 @@ def main():
                 print(f"{i:<3} {game_str:<42} {'No positive EV bet':<32} {'':<10} {'':<8} {'':<12} {'':<12}")
         print("="*130)
         
-        # Top recommendation (first positive EV or highest negative)
         if pos_rows:
             best = pos_rows[0]
             print(f"\n🎯 Top pick (highest positive EV):")
@@ -192,23 +200,19 @@ def main():
         else:
             print("\n❌ No bets available for any game (all filtered out).")
         
-        # ==================== PARLAY BUILDER ====================
         if len(positive_games) >= 2:
             print("\n" + "="*130)
             print("🎲 AUTOMATIC PARLAY SUGGESTIONS (using top positive EV bets)")
             print("   Note: Parlays assume independence; actual variance is higher. Bet smaller stakes.")
             print("="*130)
-            
             max_legs = min(5, len(positive_games))
             for k in range(2, max_legs + 1):
                 legs = positive_games[:k]
-                
                 parlay_odds = np.prod([leg['odds'] for leg in legs])
                 parlay_prob = np.prod([leg['model_prob'] for leg in legs])
                 parlay_ev = (parlay_prob * parlay_odds) - 1
                 parlay_kelly_frac = parlay_kelly_fraction(parlay_prob, parlay_odds)
                 parlay_stake = parlay_kelly_frac * args.bankroll
-                
                 print(f"\n📋 {k}-Leg Parlay (Top {k} EV bets)")
                 for idx, leg in enumerate(legs, 1):
                     print(f"   {idx}. {leg['game']} - {leg['prop']} (Win% {format_probability(leg['model_prob'])}, Odds {leg['odds']:.2f})")

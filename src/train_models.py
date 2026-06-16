@@ -1,31 +1,29 @@
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss, brier_score_loss
-from sklearn.utils.class_weight import compute_class_weight
 import xgboost as xgb
 import joblib
 import os
 import warnings
+from .calibration_methods import (
+    PlattCalibration, IsotonicCalibration, BetaCalibrationWrapper,
+    TemperatureScaling, EnsembleCalibration
+)
 warnings.filterwarnings('ignore')
 
-def train_models(game_features, models_dir='../models'):
+def train_models(game_features, models_dir='../models', calibration_method='isotonic'):
     os.makedirs(models_dir, exist_ok=True)
-    
     windows = [1, 3, 5, 7, 10, 15]
     base_features = []
     for w in windows:
         base_features.extend([
             f'home_team_avg_runs_last{w}', f'away_team_avg_runs_last{w}',
-            f'home_team_form_rating_last{w}', f'away_team_form_rating_last{w}',
-            f'home_opp_strength_last{w}', f'away_opp_strength_last{w}'  # new opponent strength
+            f'home_team_form_rating_last{w}', f'away_team_form_rating_last{w}'
         ])
     base_features += ['home_team_pitching_strength', 'away_team_pitching_strength']
     runline_features = base_features + ['expected_margin']
     
-    # Prepare data
     X_total = game_features[base_features].fillna(game_features[base_features].median())
     y_total = game_features['total_runs']
     X_winner = game_features[base_features].fillna(game_features[base_features].median())
@@ -33,7 +31,6 @@ def train_models(game_features, models_dir='../models'):
     X_runline = game_features[runline_features].fillna(game_features[runline_features].median())
     y_runline = game_features['run_line_cover']
     
-    # Temporal split (80/20)
     split_idx = int(len(X_winner) * 0.8)
     X_winner_train, X_winner_val = X_winner.iloc[:split_idx], X_winner.iloc[split_idx:]
     y_winner_train, y_winner_val = y_winner.iloc[:split_idx], y_winner.iloc[split_idx:]
@@ -42,76 +39,72 @@ def train_models(game_features, models_dir='../models'):
     X_total_train, X_total_val = X_total.iloc[:split_idx], X_total.iloc[split_idx:]
     y_total_train, y_total_val = y_total.iloc[:split_idx], y_total.iloc[split_idx:]
     
-    # --- Total Runs (RandomForest) ---
+    # Total Runs
     print("Training Total Runs model...")
     total_model = RandomForestRegressor(n_estimators=200, max_depth=20, random_state=42, n_jobs=-1)
     total_model.fit(X_total_train, y_total_train)
     joblib.dump(total_model, f"{models_dir}/total_model.pkl")
     
-    # --- Winner model: XGBoost with class weights + Platt scaling ---
-    print("Training Winner model with XGBoost...")
-    # Compute scale_pos_weight (ratio of negative to positive)
+    # Winner base model (XGBoost)
+    print("Training Winner base model...")
     n_neg = (y_winner_train == 0).sum()
     n_pos = (y_winner_train == 1).sum()
-    scale_pos_weight = (n_neg / n_pos) * 2.5   # increased underdog weight
-    
+    scale_pos_weight = (n_neg / n_pos) * 2.5
     xgb_winner = xgb.XGBClassifier(
-        n_estimators=200,
-        max_depth=6,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        scale_pos_weight=scale_pos_weight,
-        random_state=42,
-        eval_metric='logloss',
-        use_label_encoder=False
+        n_estimators=200, max_depth=6, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, scale_pos_weight=scale_pos_weight,
+        random_state=42, eval_metric='logloss', use_label_encoder=False
     )
-    winner_calibrated = CalibratedClassifierCV(xgb_winner, method='sigmoid', cv=3)
-    winner_calibrated.fit(X_winner_train, y_winner_train)
+    xgb_winner.fit(X_winner_train, y_winner_train)
+    raw_proba_val = xgb_winner.predict_proba(X_winner_val)[:, 1]
     
-    # Bias correction on logits (logistic regression)
-    raw_proba_train = winner_calibrated.predict_proba(X_winner_train)[:, 1]
-    def logit(p): return np.log(p / (1 - p + 1e-8))
-    logits_train = logit(raw_proba_train)
-    bias_corrector = LogisticRegression()
-    bias_corrector.fit(logits_train.reshape(-1,1), y_winner_train)
-    joblib.dump(winner_calibrated, f"{models_dir}/winner_calibrated.pkl")
-    joblib.dump(bias_corrector, f"{models_dir}/winner_bias_corrector.pkl")
+    # Calibration
+    if calibration_method == 'platt':
+        calibrator = PlattCalibration()
+    elif calibration_method == 'isotonic':
+        calibrator = IsotonicCalibration()
+    elif calibration_method == 'beta':
+        calibrator = BetaCalibrationWrapper()
+    elif calibration_method == 'temperature':
+        calibrator = TemperatureScaling()
+    elif calibration_method == 'ensemble':
+        calibrator = EnsembleCalibration([PlattCalibration(), IsotonicCalibration(), BetaCalibrationWrapper()])
+    else:
+        raise ValueError(f"Unknown method: {calibration_method}")
+    calibrator.fit(raw_proba_val, y_winner_val)
+    calibrated_val = calibrator.predict(raw_proba_val)
+    val_ll = log_loss(y_winner_val, calibrated_val, labels=[0,1])
+    val_bs = brier_score_loss(y_winner_val, calibrated_val)
+    print(f"Winner model ({calibration_method}): LogLoss={val_ll:.4f}, Brier={val_bs:.4f}")
     
-    # Validation metrics
-    raw_proba_val = winner_calibrated.predict_proba(X_winner_val)[:, 1]
-    logits_val = logit(raw_proba_val)
-    corrected_proba_val = bias_corrector.predict_proba(logits_val.reshape(-1,1))[:, 1]
-    val_logloss = log_loss(y_winner_val, corrected_proba_val, labels=[0,1])
-    val_brier = brier_score_loss(y_winner_val, corrected_proba_val)
-    print(f"Winner model Validation LogLoss: {val_logloss:.4f}, Brier: {val_brier:.4f}")
+    joblib.dump(xgb_winner, f"{models_dir}/winner_base.pkl")
+    calibrator.save(f"{models_dir}/winner_calibrator.pkl")
     
-    # --- Run Line model (XGBoost with calibration) ---
-    print("Training Run Line model with XGBoost...")
+    # Run Line model (simple isotonic for consistency)
+    print("Training Run Line model...")
     n_neg_rl = (y_runline_train == 0).sum()
     n_pos_rl = (y_runline_train == 1).sum()
     scale_pos_weight_rl = n_neg_rl / n_pos_rl if n_pos_rl > 0 else 1.0
     xgb_runline = xgb.XGBClassifier(
-        n_estimators=200,
-        max_depth=6,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        scale_pos_weight=scale_pos_weight_rl,
-        random_state=42,
-        eval_metric='logloss',
-        use_label_encoder=False
+        n_estimators=200, max_depth=6, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, scale_pos_weight=scale_pos_weight_rl,
+        random_state=42, eval_metric='logloss', use_label_encoder=False
     )
-    runline_model = CalibratedClassifierCV(xgb_runline, method='isotonic', cv=3)
-    runline_model.fit(X_runline_train, y_runline_train)
-    joblib.dump(runline_model, f"{models_dir}/runline_model.pkl")
+    xgb_runline.fit(X_runline_train, y_runline_train)
+    joblib.dump(xgb_runline, f"{models_dir}/runline_base.pkl")
+    from sklearn.isotonic import IsotonicRegression
+    rl_raw = xgb_runline.predict_proba(X_runline_val)[:, 1]
+    rl_iso = IsotonicRegression(out_of_bounds='clip')
+    rl_iso.fit(rl_raw, y_runline_val)
+    joblib.dump(rl_iso, f"{models_dir}/runline_isotonic.pkl")
     
-    # Save feature sets
-    feature_sets = {
-        'total': base_features,
-        'winner': base_features,
-        'runline': runline_features
-    }
+    feature_sets = {'total': base_features, 'winner': base_features, 'runline': runline_features}
     joblib.dump(feature_sets, f"{models_dir}/feature_sets.pkl")
     
-    return {'total': total_model, 'winner': winner_calibrated, 'runline': runline_model}, feature_sets
+    return {
+        'total': total_model,
+        'winner_base': xgb_winner,
+        'winner_calibrator': calibrator,
+        'runline_base': xgb_runline,
+        'runline_calibrator': rl_iso
+    }, feature_sets
