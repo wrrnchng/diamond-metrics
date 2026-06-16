@@ -57,13 +57,26 @@ def manual_odds_input(games):
         if rl_home: g_odds['runline_home'] = float(rl_home)
         rl_away = input("  Away Run Line +1.5: ").strip()
         if rl_away: g_odds['runline_away'] = float(rl_away)
-        ou_line = input("  Over/Under line: ").strip()
-        if ou_line:
-            g_odds['over_under_line'] = float(ou_line)
+        # Over/Under lines (separate for over and under)
+        over_line = input("  Over line (e.g., 8.5): ").strip()
+        if over_line:
+            g_odds['over_line'] = float(over_line)
             over_odds = input("  Over odds: ").strip()
             if over_odds: g_odds['over_odds'] = float(over_odds)
+        under_line = input("  Under line (e.g., 8.5): ").strip()
+        if under_line:
+            g_odds['under_line'] = float(under_line)
             under_odds = input("  Under odds: ").strip()
             if under_odds: g_odds['under_odds'] = float(under_odds)
+        # For backward compatibility, also allow a single line
+        if 'over_line' not in g_odds and 'under_line' not in g_odds:
+            ou_line = input("  Over/Under line (single line): ").strip()
+            if ou_line:
+                g_odds['over_under_line'] = float(ou_line)
+                over_odds = input("  Over odds: ").strip()
+                if over_odds: g_odds['over_odds'] = float(over_odds)
+                under_odds = input("  Under odds: ").strip()
+                if under_odds: g_odds['under_odds'] = float(under_odds)
         if g_odds:
             odds[f"{g['away_team']} @ {g['home_team']}"] = g_odds
     return odds
@@ -164,6 +177,7 @@ def get_recommendations(features_df, odds_data, models, feature_sets, bankroll=1
         runline_home_prob = runline_cal.predict(np.array([raw_rl]))[0]
         runline_away_prob = 1 - runline_home_prob
         total_pred = total_model.predict(X_winner)[0]
+        
         def add_bet(prop, prob, odds_val):
             ev = calculate_ev_decimal(prob, odds_val)
             if ev > 0:
@@ -176,17 +190,32 @@ def get_recommendations(features_df, odds_data, models, feature_sets, bankroll=1
                     'ev': round(ev, 4),
                     'kelly_bet_$': round(stake, 2)
                 })
+        
+        # Moneyline
         if 'moneyline_home' in game_odds: add_bet('Moneyline (Home)', home_win_prob, game_odds['moneyline_home'])
         if 'moneyline_away' in game_odds: add_bet('Moneyline (Away)', away_win_prob, game_odds['moneyline_away'])
+        # Run Line
         if 'runline_home' in game_odds: add_bet('Run Line -1.5 (Home)', runline_home_prob, game_odds['runline_home'])
         if 'runline_away' in game_odds: add_bet('Run Line +1.5 (Away)', runline_away_prob, game_odds['runline_away'])
-        if 'over_under_line' in game_odds and 'over_odds' in game_odds:
+        # Totals: separate over and under lines
+        if 'over_line' in game_odds and 'over_odds' in game_odds:
+            line = game_odds['over_line']
+            over_prob = np.clip(1 - (line - total_pred) / 10, 0.1, 0.9)
+            add_bet(f"Over {line} runs", over_prob, game_odds['over_odds'])
+        if 'under_line' in game_odds and 'under_odds' in game_odds:
+            line = game_odds['under_line']
+            under_prob = np.clip(1 - (line - total_pred) / 10, 0.1, 0.9)
+            under_prob = 1 - under_prob  # because under probability is 1 - over_prob
+            add_bet(f"Under {line} runs", under_prob, game_odds['under_odds'])
+        # Backward compatibility: single line for both
+        if 'over_under_line' in game_odds and 'over_odds' in game_odds and 'over_line' not in game_odds:
             line = game_odds['over_under_line']
             over_prob = np.clip(1 - (line - total_pred) / 10, 0.1, 0.9)
             add_bet(f"Over {line} runs", over_prob, game_odds['over_odds'])
-        if 'over_under_line' in game_odds and 'under_odds' in game_odds:
+        if 'over_under_line' in game_odds and 'under_odds' in game_odds and 'under_line' not in game_odds:
             line = game_odds['over_under_line']
-            under_prob = 1 - np.clip(1 - (line - total_pred) / 10, 0.1, 0.9)
+            under_prob = np.clip(1 - (line - total_pred) / 10, 0.1, 0.9)
+            under_prob = 1 - under_prob
             add_bet(f"Under {line} runs", under_prob, game_odds['under_odds'])
     if not recs:
         return pd.DataFrame()
