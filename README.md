@@ -45,11 +45,32 @@ python run.py --train --start 2024-01-01 --end 2024-12-31 --append
 
 During `--predict`, you select games from today's schedule and enter decimal odds for moneyline, run line, and over/under markets. The tool returns bets where model probability implies EV above 5%, with recommended stake sizes.
 
+## Web Interface (Streamlit)
+
+To launch the interactive dashboard:
+
+```bash
+streamlit run app.py
+```
+
+The UI allows you to:
+- Pick a date (defaults to today in ET)
+- Fetch games for that date
+- Select which games to bet on
+- Enter decimal odds for each selected game (moneyline, run line, totals)
+- Adjust your bankroll (default ₱1000)
+- View a table of positive EV bets sorted by expected value
+- See automatic parlay suggestions (2‑leg through 5‑leg) using the top EV bets
+- Retrain models directly from the interface (background process)
+
+All predictions use the same isotonic‑calibrated XGBoost models as the CLI.
+
 ## Project Layout
 
 ```
 mlb_betting_predictor/
 ├── run.py                  # CLI entry point
+├── app.py                  # Streamlit Frontend
 ├── requirements.txt
 ├── src/
 │   ├── data_fetcher.py     # MLB Stats API fetch and CSV cache
