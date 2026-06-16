@@ -32,3 +32,5 @@ best_calibration_method.txt
 compare_calibration.py
 backtest.py
 calibration_comparison.png
+backtest_all_props.png
+backtest_all_props.py
