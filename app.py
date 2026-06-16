@@ -155,6 +155,11 @@ if not selected_indices:
     st.stop()
 
 st.subheader("💰 Enter Odds (Decimal)")
+st.markdown("For totals, select the line from the dropdown and enter the odds in the adjacent box.")
+
+# Possible O/U lines from 5.5 to 15.5 in 0.5 increments
+ou_lines = [round(x * 0.5, 1) for x in range(11, 32)]  # 5.5 to 15.5
+
 odds_data = {}
 with st.form("odds_form"):
     for idx in selected_indices:
@@ -169,20 +174,53 @@ with st.form("odds_form"):
             rl_h = st.text_input(f"{home} Run Line -1.5", key=f"rl_h_{idx}", placeholder="2.37")
             rl_a = st.text_input(f"{away} Run Line +1.5", key=f"rl_a_{idx}", placeholder="1.59")
         with col3:
-            ou = st.text_input("Over/Under Line", key=f"ou_{idx}", placeholder="8.5")
-            over = st.text_input("Over odds", key=f"over_{idx}", placeholder="1.97")
-            under = st.text_input("Under odds", key=f"under_{idx}", placeholder="1.85")
+            # Over row – white caption with reduced padding
+            st.markdown('<p style="color: white; margin-bottom: 5px; font-size: 0.9rem;">Over Total Runs</p>', unsafe_allow_html=True)
+            over_col1, over_col2 = st.columns([1, 2])
+            with over_col1:
+                over_line = st.selectbox(
+                    "Over Line",
+                    options=ou_lines,
+                    index=ou_lines.index(8.5) if 8.5 in ou_lines else 0,
+                    key=f"over_line_{idx}",
+                    label_visibility="collapsed"
+                )
+            with over_col2:
+                over_odds = st.text_input(
+                    "Over Odds",
+                    key=f"over_odds_{idx}",
+                    placeholder="input odds",
+                    label_visibility="collapsed"
+                )
+            # Under row – white caption with reduced padding
+            st.markdown('<p style="color: white; margin-bottom: 5px; font-size: 0.9rem;">Under Total Runs</p>', unsafe_allow_html=True)
+            under_col1, under_col2 = st.columns([1, 2])
+            with under_col1:
+                under_line = st.selectbox(
+                    "Under Line",
+                    options=ou_lines,
+                    index=ou_lines.index(8.5) if 8.5 in ou_lines else 0,
+                    key=f"under_line_{idx}",
+                    label_visibility="collapsed"
+                )
+            with under_col2:
+                under_odds = st.text_input(
+                    "Under Odds",
+                    key=f"under_odds_{idx}",
+                    placeholder="input odds",
+                    label_visibility="collapsed"
+                )
         game_odds = {}
         if ml_h: game_odds['moneyline_home'] = float(ml_h)
         if ml_a: game_odds['moneyline_away'] = float(ml_a)
         if rl_h: game_odds['runline_home'] = float(rl_h)
         if rl_a: game_odds['runline_away'] = float(rl_a)
-        if ou and over:
-            game_odds['over_under_line'] = float(ou)
-            game_odds['over_odds'] = float(over)
-        if ou and under:
-            game_odds['over_under_line'] = float(ou)
-            game_odds['under_odds'] = float(under)
+        if over_odds:
+            game_odds['over_line'] = float(over_line)
+            game_odds['over_odds'] = float(over_odds)
+        if under_odds:
+            game_odds['under_line'] = float(under_line)
+            game_odds['under_odds'] = float(under_odds)
         if game_odds:
             odds_data[f"{away} @ {home}"] = game_odds
     bankroll = st.number_input("Bankroll (₱)", min_value=100.0, value=1000.0, step=100.0)
@@ -213,14 +251,14 @@ if not recs.empty:
         use_container_width=True
     )
     
-    # ========== FIXED PARLAY BUILDER (no slider) ==========
+    # Parlay builder (unchanged)
     st.subheader("📋 Automatic Parlays")
     positive_ev = recs[recs['ev'] > 0]
     if len(positive_ev) < 2:
         st.info("Need at least 2 positive EV bets to build a parlay.")
     else:
-        top_legs = positive_ev.head(5)  # use top 5 EV bets
-        for k in range(2, 6):  # 2-leg, 3-leg, 4-leg, 5-leg
+        top_legs = positive_ev.head(5)
+        for k in range(2, 6):
             if k > len(top_legs):
                 continue
             legs = top_legs.head(k)
@@ -234,7 +272,6 @@ if not recs.empty:
                 st.write(f"**Model win probability:** {combined_prob:.2%}")
                 if ev_parlay > 0:
                     st.success(f"✅ Positive EV: {ev_parlay:.4f}")
-                    # Kelly stake for parlay (capped at 5%)
                     b = parlay_odds - 1
                     if b > 0:
                         kelly_full = (combined_prob * b - (1 - combined_prob)) / b
