@@ -10,3 +10,4 @@ matplotlib
 imbalance-xgboost
 savant-extras
 betacal
+streamlit
